@@ -30,6 +30,22 @@ const (
 	OriginalBackupName = "config.original.backup"
 )
 
+// ErrExternallyManaged is returned when attempting to update or delete a server
+// that originates from a config.d file. These servers are managed externally
+// and lazyssh should not modify them.
+var ErrExternallyManaged = fmt.Errorf("server entry is managed externally in a config.d file")
+
+// IsErrExternallyManaged checks if an error is the ErrExternallyManaged sentinel.
+func IsErrExternallyManaged(err error) bool {
+	return err == ErrExternallyManaged
+}
+
+// IsExternallyManaged checks if a server originates from a config.d file
+// and should not be modified by lazyssh.
+func IsExternallyManaged(server domain.Server) bool {
+	return server.SourceFile != "" && server.SourceFile != domain.SourceFileMain
+}
+
 // filterServers filters servers based on the query string.
 func (r *Repository) filterServers(servers []domain.Server, query string) []domain.Server {
 	query = strings.ToLower(query)

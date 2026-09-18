@@ -53,13 +53,24 @@ func NewRepositoryWithFS(logger *zap.SugaredLogger, configPath string, metaDataP
 
 // ListServers returns all servers matching the query pattern.
 // Empty query returns all servers.
+// Loads from both ~/.ssh/config and ~/.ssh/config.d/*.conf, merging with
+// main config taking precedence for duplicate aliases.
 func (r *Repository) ListServers(query string) ([]domain.Server, error) {
-	cfg, err := r.loadConfig()
+	bundle, err := r.loadAllConfigs()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
 
-	servers := r.toDomainServer(cfg)
+	// Map main config hosts first (they take precedence)
+	servers := r.toDomainServer(bundle.main, domain.SourceFileMain)
+
+	// Map config.d hosts — main config wins for duplicates
+	for filename, cfg := range bundle.includes {
+		sourceFile := filename // bare filename like "dc_payx.conf"
+		extra := r.toDomainServer(cfg, sourceFile)
+		servers = r.mergeServersWithDedup(servers, extra, filename)
+	}
+
 	metadata, err := r.metadataManager.loadAll()
 	if err != nil {
 		r.logger.Warnf("Failed to load metadata: %v", err)
@@ -71,6 +82,26 @@ func (r *Repository) ListServers(query string) ([]domain.Server, error) {
 	}
 
 	return r.filterServers(servers, query), nil
+}
+
+// mergeServersWithDedup merges extra servers into existing, with existing taking precedence.
+// When a duplicate alias is found, the existing server wins and a warning is logged.
+func (r *Repository) mergeServersWithDedup(existing, extra []domain.Server, sourceFile string) []domain.Server {
+	existingMap := make(map[string]int, len(existing))
+	for i, s := range existing {
+		existingMap[s.Alias] = i
+	}
+
+	for _, s := range extra {
+		if _, exists := existingMap[s.Alias]; exists {
+			// Duplicate alias — existing (main config) wins, log the conflict
+			r.logger.Warnf("duplicate alias '%s' in %s, overridden by %s", s.Alias, sourceFile, domain.SourceFileMain)
+			continue
+		}
+		existing = append(existing, s)
+	}
+
+	return existing
 }
 
 // AddServer adds a new server to the SSH config.
@@ -95,7 +126,12 @@ func (r *Repository) AddServer(server domain.Server) error {
 }
 
 // UpdateServer updates an existing server in the SSH config.
+// Returns ErrExternallyManaged if the server originates from a config.d file.
 func (r *Repository) UpdateServer(server domain.Server, newServer domain.Server) error {
+	if IsExternallyManaged(server) {
+		return fmt.Errorf("%w: %s", ErrExternallyManaged, server.SourceFile)
+	}
+
 	cfg, err := r.loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -135,7 +171,12 @@ func (r *Repository) UpdateServer(server domain.Server, newServer domain.Server)
 }
 
 // DeleteServer removes a server from the SSH config.
+// Returns ErrExternallyManaged if the server originates from a config.d file.
 func (r *Repository) DeleteServer(server domain.Server) error {
+	if IsExternallyManaged(server) {
+		return fmt.Errorf("%w: %s", ErrExternallyManaged, server.SourceFile)
+	}
+
 	cfg, err := r.loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)

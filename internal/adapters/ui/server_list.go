@@ -15,6 +15,10 @@
 package ui
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/Adembc/lazyssh/internal/core/domain"
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -23,14 +27,24 @@ import (
 type ServerList struct {
 	*tview.List
 	servers           []domain.Server
+	displayItems      []displayItem
+	groupExpanded     map[string]bool
+	rebuilding        bool
 	onSelection       func(domain.Server)
 	onSelectionChange func(domain.Server)
 	onReturnToSearch  func()
 }
 
+type displayItem struct {
+	isGroup bool
+	group   string         // source filename (empty when isGroup=false)
+	server  *domain.Server // nil when isGroup=true
+}
+
 func NewServerList() *ServerList {
 	list := &ServerList{
-		List: tview.NewList(),
+		List:          tview.NewList(),
+		groupExpanded: make(map[string]bool),
 	}
 	list.build()
 	return list
@@ -48,9 +62,29 @@ func (sl *ServerList) build() {
 		SetSelectedTextColor(tcell.Color255).
 		SetHighlightFullLine(true)
 
+	// SetChangedFunc fires on every navigation (arrow keys, SetCurrentItem).
+	// Use it ONLY for updating details — never toggle groups here.
 	sl.List.SetChangedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
-		if index >= 0 && index < len(sl.servers) && sl.onSelectionChange != nil {
-			sl.onSelectionChange(sl.servers[index])
+		if sl.rebuilding {
+			return
+		}
+		if index >= 0 && index < len(sl.displayItems) {
+			item := sl.displayItems[index]
+			if !item.isGroup && item.server != nil && sl.onSelectionChange != nil {
+				sl.onSelectionChange(*item.server)
+			}
+		}
+	})
+
+	// SetSelectedFunc fires only on explicit Enter/click — safe for toggling groups.
+	sl.List.SetSelectedFunc(func(index int, mainText string, secondaryText string, shortcut rune) {
+		if index >= 0 && index < len(sl.displayItems) {
+			item := sl.displayItems[index]
+			if item.isGroup {
+				sl.toggleGroup(item.group)
+			} else if item.server != nil && sl.onSelection != nil {
+				sl.onSelection(*item.server)
+			}
 		}
 	})
 
@@ -67,34 +101,197 @@ func (sl *ServerList) build() {
 	})
 }
 
-func (sl *ServerList) UpdateServers(servers []domain.Server) {
-	sl.servers = servers
+func (sl *ServerList) toggleGroup(groupName string) {
+	sl.groupExpanded[groupName] = !sl.groupExpanded[groupName]
+	sl.rebuildDisplayItems()
+}
+
+// onGroupToggle checks if the current selection is a group header and toggles it.
+// Returns true if a group was toggled.
+func (sl *ServerList) onGroupToggle() bool {
+	index := sl.List.GetCurrentItem()
+	if index >= 0 && index < len(sl.displayItems) {
+		item := sl.displayItems[index]
+		if item.isGroup {
+			sl.toggleGroup(item.group)
+			return true
+		}
+	}
+	return false
+}
+
+func (sl *ServerList) rebuildDisplayItems() {
+	sl.rebuilding = true
+	defer func() { sl.rebuilding = false }()
+
+	sl.displayItems = nil
 	sl.List.Clear()
 
-	for i := range servers {
-		primary, secondary := formatServerLine(servers[i])
-		idx := i
-		sl.List.AddItem(primary, secondary, 0, func() {
-			if sl.onSelection != nil {
-				sl.onSelection(sl.servers[idx])
-			}
-		})
+	// Group servers by SourceFile from the source-of-truth slice
+	groups := make(map[string][]domain.Server)
+	for _, server := range sl.servers {
+		sourceFile := server.SourceFile
+		if sourceFile == "" {
+			sourceFile = domain.SourceFileMain
+		}
+		groups[sourceFile] = append(groups[sourceFile], server)
 	}
 
-	if sl.List.GetItemCount() > 0 {
-		sl.List.SetCurrentItem(0)
-		if sl.onSelectionChange != nil {
-			sl.onSelectionChange(sl.servers[0])
+	var groupNames []string
+	for name := range groups {
+		groupNames = append(groupNames, name)
+	}
+	sort.Strings(groupNames)
+
+	for _, groupName := range groupNames {
+		sl.displayItems = append(sl.displayItems, displayItem{
+			isGroup: true,
+			group:   groupName,
+		})
+		if sl.groupExpanded[groupName] {
+			for _, server := range groups[groupName] {
+				sl.displayItems = append(sl.displayItems, displayItem{
+					isGroup: false,
+					server:  &server,
+				})
+			}
+		}
+	}
+
+	for _, item := range sl.displayItems {
+		sl.addItemToList(item)
+	}
+
+	// Auto-select first server item (skip group headers)
+	for i, item := range sl.displayItems {
+		if !item.isGroup && item.server != nil {
+			sl.List.SetCurrentItem(i)
+			if sl.onSelectionChange != nil {
+				sl.onSelectionChange(*item.server)
+			}
+			break
+		}
+	}
+}
+
+func (sl *ServerList) addItemToList(item displayItem) {
+	if item.isGroup {
+		expanded := sl.groupExpanded[item.group]
+		indicator := "▸"
+		if expanded {
+			indicator = "▾"
+		}
+		groupName := formatGroupName(item.group)
+		primary := fmt.Sprintf("[::b]%s %s[-]", groupName, indicator)
+		sl.List.AddItem(primary, "", 0, nil)
+	} else if item.server != nil {
+		primary, secondary := formatServerLine(*item.server)
+		sl.List.AddItem(primary, secondary, 0, nil)
+	}
+}
+
+// formatGroupName strips the .conf extension and provides a friendly name for display.
+func formatGroupName(name string) string {
+	if name == domain.SourceFileMain {
+		return "config (main)"
+	}
+	return strings.TrimSuffix(name, ".conf")
+}
+
+func (sl *ServerList) UpdateServers(servers []domain.Server) {
+	sl.rebuilding = true
+	defer func() { sl.rebuilding = false }()
+
+	sl.servers = servers
+
+	// Group servers by SourceFile
+	groups := make(map[string][]domain.Server)
+	for _, server := range servers {
+		sourceFile := server.SourceFile
+		if sourceFile == "" {
+			sourceFile = domain.SourceFileMain
+		}
+		groups[sourceFile] = append(groups[sourceFile], server)
+	}
+
+	var groupNames []string
+	for name := range groups {
+		groupNames = append(groupNames, name)
+	}
+	sort.Strings(groupNames)
+
+	// Only initialize expansion state for NEW groups; preserve existing state
+	for _, groupName := range groupNames {
+		if _, exists := sl.groupExpanded[groupName]; !exists {
+			sl.groupExpanded[groupName] = true
+		}
+	}
+
+	// Remove expansion state for groups that no longer exist
+	for name := range sl.groupExpanded {
+		found := false
+		for _, gn := range groupNames {
+			if gn == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(sl.groupExpanded, name)
+		}
+	}
+
+	// Build display items
+	sl.displayItems = nil
+	sl.List.Clear()
+	for _, groupName := range groupNames {
+		sl.displayItems = append(sl.displayItems, displayItem{
+			isGroup: true,
+			group:   groupName,
+		})
+		if sl.groupExpanded[groupName] {
+			for _, server := range groups[groupName] {
+				sl.displayItems = append(sl.displayItems, displayItem{
+					isGroup: false,
+					server:  &server,
+				})
+			}
+		}
+	}
+
+	for _, item := range sl.displayItems {
+		sl.addItemToList(item)
+	}
+
+	// Auto-select first server item (skip group headers)
+	for i, item := range sl.displayItems {
+		if !item.isGroup && item.server != nil {
+			sl.List.SetCurrentItem(i)
+			if sl.onSelectionChange != nil {
+				sl.onSelectionChange(*item.server)
+			}
+			break
 		}
 	}
 }
 
 func (sl *ServerList) GetSelectedServer() (domain.Server, bool) {
-	idx := sl.List.GetCurrentItem()
-	if idx >= 0 && idx < len(sl.servers) {
-		return sl.servers[idx], true
+	index := sl.List.GetCurrentItem()
+	if index >= 0 && index < len(sl.displayItems) {
+		item := sl.displayItems[index]
+		if !item.isGroup && item.server != nil {
+			return *item.server, true
+		}
 	}
 	return domain.Server{}, false
+}
+
+// findServerAt returns the display index if the item at position i is a server (not a group).
+func (sl *ServerList) findServerAt(i int) (int, bool) {
+	if i >= 0 && i < len(sl.displayItems) && !sl.displayItems[i].isGroup {
+		return i, true
+	}
+	return i, false
 }
 
 func (sl *ServerList) OnSelection(fn func(server domain.Server)) *ServerList {

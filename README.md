@@ -14,6 +14,7 @@ With lazyssh, you can quickly navigate, connect, manage, and transfer files betw
 
 ### Server Management
 - 📜 Read & display servers from your `~/.ssh/config` in a scrollable list.
+- 📂 Read servers from `~/.ssh/config.d/*.conf` files (included via `Include` directive) — grouped by source file.
 - ➕ Add a new server from the UI with comprehensive SSH configuration options.
 - ✏ Edit existing server entries directly from the UI with a tabbed interface.
 - 🗑 Delete server entries safely.
@@ -25,6 +26,8 @@ With lazyssh, you can quickly navigate, connect, manage, and transfer files betw
 - 🖥 One‑keypress SSH into the selected server (Enter).
 - 🏷 Tag servers (e.g., prod, dev, test) for quick filtering.
 - ↕️ Sort by alias or last SSH (toggle + reverse).
+- ⬆️⬇️ Navigate with arrow keys or `j`/`k`.
+- 📂 Expand/collapse server groups (Enter on group header).
 
 ### Advanced SSH Configuration
 - 🔗 Port forwarding (LocalForward, RemoteForward, DynamicForward).
@@ -59,7 +62,7 @@ It is simply a UI/TUI wrapper around your existing `~/.ssh/config` file.
 
 - Your existing IdentityFile paths and ssh-agent integrations work exactly as before.
 
-- lazyssh only reads and updates your `~/.ssh/config`. A backup of the file is created automatically before any changes.
+- lazyssh only reads and updates your `~/.ssh/config`. Servers from `~/.ssh/config.d/*.conf` files are read-only and never modified. A backup of the file is created automatically before any changes.
 
 - File permissions on your SSH config are preserved to ensure security.
 
@@ -71,6 +74,30 @@ It is simply a UI/TUI wrapper around your existing `~/.ssh/config` file.
 - Backups:
   - One‑time original backup: before lazyssh makes its first change, it creates a single snapshot named config.original.backup beside your SSH config. If this file is present, it will never be recreated or overwritten.
   - Rolling backups: on every subsequent save, lazyssh also creates a timestamped backup named like: ~/.ssh/config-<timestamp>-lazyssh.backup. The app keeps at most 10 of these backups, automatically removing the oldest ones.
+
+---
+
+### 📂 SSH Config.d Support
+
+lazyssh automatically reads servers from `~/.ssh/config.d/*.conf` files when they are included via the `Include` directive in your main `~/.ssh/config`.
+
+**How it works:**
+- Servers from config.d files are grouped by filename in the server list.
+- Press Enter on a group header to expand/collapse the group.
+- Servers from config.d are **read-only** — edit the corresponding `.conf` file directly to modify them.
+- Servers in the main `~/.ssh/config` take precedence if the same alias appears in both places.
+- The details view shows which file each server originates from.
+
+Example `~/.ssh/config`:
+```
+Include ~/.ssh/config.d/*.conf
+
+Host myserver
+    HostName 192.168.1.100
+    User admin
+```
+
+---
 
 ## 📷 Screenshots
 
@@ -154,7 +181,13 @@ cd lazyssh
 make build
 ./bin/lazyssh
 
-# Or Run it directly
+# Or install to your GOBIN
+make install
+
+# Or install locally (e.g., to /opt/homebrew/bin/)
+make build && cp ./bin/lazyssh /opt/homebrew/bin/lazyssh
+
+# Or run directly from source
 make run
 ```
 
@@ -166,7 +199,7 @@ make run
 | ----- | ----------------------------- |
 | /     | Toggle search bar             |
 | ↑↓/jk | Navigate servers              |
-| Enter | SSH into selected server      |
+| Enter | SSH into selected server / Toggle group expand/collapse |
 | c     | Copy SSH command to clipboard |
 | g     | Ping selected server          |
 | r     | Refresh background data       |
