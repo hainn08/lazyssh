@@ -82,11 +82,17 @@ func (sd *ServerDetails) UpdateServer(server domain.Server) {
 		portText = ""
 	}
 
+	// Source file display
+	sourceText := formatGroupName(server.SourceFile)
+	if sourceText != "config (main)" {
+		sourceText = fmt.Sprintf("%s (managed externally)", sourceText)
+	}
+
 	text := fmt.Sprintf(
-		"[::b]%s[-]\n\n[::b]Basic Settings:[-]\n  Host: [white]%s[-]\n  User: [white]%s[-]\n  Port: [white]%s[-]\n  Key:  [white]%s[-]\n  Tags: %s\n  Pinned: [white]%s[-]\n  Last SSH: %s\n  SSH Count: [white]%d[-]\n",
+		"[::b]%s[-]\n\n[::b]Basic Settings:[-]\n  Host: [white]%s[-]\n  User: [white]%s[-]\n  Port: [white]%s[-]\n  Key:  [white]%s[-]\n  Tags: %s\n  Pinned: [white]%s[-]\n  Last SSH: %s\n  SSH Count: [white]%d[-]\n  Source: %s\n",
 		aliasText, hostText, userText, portText,
 		serverKey, tagsText, pinnedStr,
-		lastSeen, server.SSHCount)
+		lastSeen, server.SSHCount, sourceText)
 
 	// Advanced settings section (only show non-empty fields)
 	// Organized by logical grouping for better readability
@@ -197,7 +203,7 @@ func (sd *ServerDetails) UpdateServer(server domain.Server) {
 
 	// Build advanced settings text without group labels for cleaner display
 	hasAdvanced := false
-	advancedText := "\n[::b]Advanced Settings:[-]\n"
+	advancedText := "\n[::b]Advanced Settings:[-]"
 
 	for _, group := range groups {
 		for _, field := range group.fields {
@@ -213,7 +219,7 @@ func (sd *ServerDetails) UpdateServer(server domain.Server) {
 	}
 
 	// Commands list
-	text += "\n[::b]Commands:[-]\n  Enter: SSH connect\n  f: Port forward\n  x: Stop forwarding\n  c: Copy SSH command\n  g: Ping server\n  r: Refresh list\n  a: Add new server\n  e: Edit entry\n  t: Edit tags\n  d: Delete entry\n  p: Pin/Unpin"
+	text += "\n[::b]Commands:[-]\n  j/k: Navigate up/down\n  Enter: SSH connect / Toggle group\n  f: Port forward\n  x: Stop forwarding\n  c: Copy SSH command\n  g: Ping server\n  r: Refresh list\n  a: Add new server\n  e: Edit entry\n  t: Edit tags\n  d: Delete entry\n  p: Pin/Unpin"
 
 	sd.TextView.SetText(text)
 }

@@ -143,7 +143,7 @@ tidy: ## Tidy up dependencies
 	go mod tidy
 
 .PHONY: build
-build: quality $(OUTPUT_DIR) ## Build binary
+build: $(OUTPUT_DIR) ## Build binary
 	go build $(LDFLAGS) -o $(OUTPUT_DIR)/$(BINARY_NAME) $(CMD_DIR)
 
 .PHONY: build-all

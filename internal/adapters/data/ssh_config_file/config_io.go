@@ -18,10 +18,88 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/kevinburke/ssh_config"
 )
+
+// configBundle holds the parsed main config plus all config.d files.
+// This is the result of loadAllConfigs().
+type configBundle struct {
+	main      *ssh_config.Config
+	includes  map[string]*ssh_config.Config // bare filename -> parsed config
+	mainPath  string                        // e.g., "~/.ssh/config"
+	configDir string                        // e.g., "~/.ssh/config.d"
+}
+
+// loadAllConfigs reads and parses the main SSH config plus all config.d/*.conf files.
+// If the config.d directory doesn't exist or is empty, includes will be an empty map.
+// This is the config.d-aware replacement for loadConfig().
+func (r *Repository) loadAllConfigs() (*configBundle, error) {
+	// Parse main config first
+	mainCfg, err := r.loadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load main config: %w", err)
+	}
+
+	bundle := &configBundle{
+		main:      mainCfg,
+		includes:  make(map[string]*ssh_config.Config),
+		mainPath:  r.configPath,
+		configDir: filepath.Join(filepath.Dir(r.configPath), "config.d"),
+	}
+
+	// Discover and parse config.d files
+	r.loadConfigDFiles(bundle)
+
+	return bundle, nil
+}
+
+// loadConfigDFiles scans the config.d directory for *.conf files and parses each.
+func (r *Repository) loadConfigDFiles(bundle *configBundle) {
+	entries, err := r.fileSystem.ReadDir(bundle.configDir)
+	if err != nil {
+		// Directory doesn't exist or can't be read — graceful no-op
+		return
+	}
+
+	var confFiles []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() && filepath.Ext(name) == ".conf" {
+			confFiles = append(confFiles, name)
+		}
+	}
+
+	// Sort for deterministic order (useful for testing and consistent log output)
+	sort.Strings(confFiles)
+
+	for _, filename := range confFiles {
+		filePath := filepath.Join(bundle.configDir, filename)
+		file, err := r.fileSystem.Open(filePath)
+		if err != nil {
+			r.logger.Warnf("failed to open config.d file %s: %v", filename, err)
+			continue
+		}
+
+		func() {
+			defer func() {
+				if cerr := file.Close(); cerr != nil {
+					r.logger.Warnf("failed to close config.d file %s: %v", filename, cerr)
+				}
+			}()
+
+			cfg, err := ssh_config.Decode(file)
+			if err != nil {
+				r.logger.Warnf("failed to parse config.d file %s: %v", filename, err)
+				return
+			}
+
+			bundle.includes[filename] = cfg
+		}()
+	}
+}
 
 // loadConfig reads and parses the SSH config file.
 // If the file does not exist, it returns an empty config without error to support first-run behavior.

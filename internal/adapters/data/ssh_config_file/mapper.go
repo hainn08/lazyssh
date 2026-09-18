@@ -24,7 +24,8 @@ import (
 )
 
 // toDomainServer converts ssh_config.Config to a slice of domain.Server.
-func (r *Repository) toDomainServer(cfg *ssh_config.Config) []domain.Server {
+// The sourceFile parameter is used to tag each server with its origin file.
+func (r *Repository) toDomainServer(cfg *ssh_config.Config, sourceFile string) []domain.Server {
 	servers := make([]domain.Server, 0, len(cfg.Hosts))
 	for _, host := range cfg.Hosts {
 
@@ -46,6 +47,7 @@ func (r *Repository) toDomainServer(cfg *ssh_config.Config) []domain.Server {
 			Aliases:       aliases,
 			Port:          22,
 			IdentityFiles: []string{},
+			SourceFile:    sourceFile,
 		}
 
 		for _, node := range host.Nodes {

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Adembc/lazyssh/internal/adapters/data/ssh_config_file"
 	"github.com/Adembc/lazyssh/internal/core/domain"
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -95,6 +96,10 @@ func (t *tui) handleGlobalKeys(event *tcell.EventKey) *tcell.EventKey {
 	}
 
 	if event.Key() == tcell.KeyEnter {
+		// Check if cursor is on a group header — toggle expand/collapse
+		if t.serverList.onGroupToggle() {
+			return nil
+		}
 		t.handleServerConnect()
 		return nil
 	}
@@ -243,8 +248,15 @@ func (t *tui) handleServerAdd() {
 	t.app.SetRoot(form, true)
 }
 
+// handleServerEdit() opens the edit form for the selected server.
+// If the server is from a config.d file (externally managed), show a message and return.
 func (t *tui) handleServerEdit() {
 	if server, ok := t.serverList.GetSelectedServer(); ok {
+		// Check if this server is externally managed (from config.d)
+		if server.SourceFile != "" && server.SourceFile != domain.SourceFileMain {
+			t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
+			return
+		}
 		form := NewServerForm(ServerFormEdit, &server).
 			SetApp(t.app).
 			SetVersionInfo(t.version, t.commit).
@@ -259,6 +271,11 @@ func (t *tui) handleServerSave(server domain.Server, original *domain.Server) {
 	if original != nil {
 		// Edit mode
 		err = t.serverService.UpdateServer(*original, server)
+		if err != nil && ssh_config_file.IsErrExternallyManaged(err) {
+			t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
+			t.handleFormCancel()
+			return
+		}
 	} else {
 		// Add mode
 		err = t.serverService.AddServer(server)
@@ -279,6 +296,11 @@ func (t *tui) handleServerSave(server domain.Server, original *domain.Server) {
 
 func (t *tui) handleServerDelete() {
 	if server, ok := t.serverList.GetSelectedServer(); ok {
+		// Check if this server is externally managed (from config.d)
+		if server.SourceFile != "" && server.SourceFile != domain.SourceFileMain {
+			t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
+			return
+		}
 		t.showDeleteConfirmModal(server)
 	}
 }
@@ -359,7 +381,11 @@ func (t *tui) showDeleteConfirmModal(server domain.Server) {
 		SetText(msg).
 		AddButtons([]string{"[yellow]C[-]ancel", "[yellow]D[-]elete"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-			if buttonIndex == 1 {
+		if buttonIndex == 1 {
+			if ssh_config_file.IsExternallyManaged(server) {
+				t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
+					return
+				}
 				_ = t.serverService.DeleteServer(server)
 				t.refreshServerList()
 			}
@@ -375,6 +401,11 @@ func (t *tui) showDeleteConfirmModal(server domain.Server) {
 			return nil
 		case 'd', 'D':
 			// Delete
+			if ssh_config_file.IsExternallyManaged(server) {
+				t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
+				t.handleModalClose()
+				return nil
+			}
 			_ = t.serverService.DeleteServer(server)
 			t.refreshServerList()
 			t.handleModalClose()
@@ -408,8 +439,15 @@ func (t *tui) showEditTagsForm(server domain.Server) {
 
 		newServer := server
 		newServer.Tags = tags
-		_ = t.serverService.UpdateServer(server, newServer)
-		// Refresh UI and go back
+		if err := t.serverService.UpdateServer(server, newServer); err != nil {
+			if ssh_config_file.IsErrExternallyManaged(err) {
+				t.showStatusTemp(fmt.Sprintf("Tags managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
+			} else {
+				t.showStatusTemp(fmt.Sprintf("Failed to update tags: %v", err))
+			}
+			t.returnToMain()
+			return
+		}
 		t.refreshServerList()
 		t.returnToMain()
 		t.showStatusTemp("Tags updated")

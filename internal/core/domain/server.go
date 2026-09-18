@@ -16,6 +16,11 @@ package domain
 
 import "time"
 
+// SourceFile constants for server origin tracking
+const (
+	SourceFileMain = "~/.ssh/config" // Main SSH config file
+)
+
 type Server struct {
 	Alias         string
 	Aliases       []string
@@ -27,6 +32,12 @@ type Server struct {
 	LastSeen      time.Time
 	PinnedAt      time.Time
 	SSHCount      int
+
+	// SourceFile tracks which config file this server entry came from.
+	// Used for grouping in the UI and for determining edit/delete permissions.
+	// Values: "~/.ssh/config" for main config, or bare filename like "dc_payx.conf"
+	// for config.d entries.
+	SourceFile string // e.g., "~/.ssh/config", "dc_payx.conf"
 
 	// Additional SSH config fields
 	// Connection and proxy settings
