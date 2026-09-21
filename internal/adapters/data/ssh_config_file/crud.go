@@ -15,6 +15,7 @@
 package ssh_config_file
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -37,7 +38,7 @@ var ErrExternallyManaged = fmt.Errorf("server entry is managed externally in a c
 
 // IsErrExternallyManaged checks if an error is the ErrExternallyManaged sentinel.
 func IsErrExternallyManaged(err error) bool {
-	return err == ErrExternallyManaged
+	return errors.Is(err, ErrExternallyManaged)
 }
 
 // IsExternallyManaged checks if a server originates from a config.d file
@@ -206,7 +207,9 @@ func (r *Repository) createHostFromServer(server domain.Server) *ssh_config.Host
 
 // addKVNodeIfNotEmpty adds a key-value node to the host if the value is not empty.
 func (r *Repository) addKVNodeIfNotEmpty(host *ssh_config.Host, key, value string) {
-	if value == "" {
+	// Reject empty values and quote-only values that the SSH parser would
+	// reject as "Missing argument" (e.g. IdentityFile '').
+	if value == "" || value == "''" || value == `""` {
 		return
 	}
 

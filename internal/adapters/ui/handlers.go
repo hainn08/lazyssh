@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Adembc/lazyssh/internal/adapters/data/ssh_config_file"
 	"github.com/Adembc/lazyssh/internal/core/domain"
 	"github.com/atotto/clipboard"
 	"github.com/gdamore/tcell/v2"
@@ -249,14 +248,8 @@ func (t *tui) handleServerAdd() {
 }
 
 // handleServerEdit() opens the edit form for the selected server.
-// If the server is from a config.d file (externally managed), show a message and return.
 func (t *tui) handleServerEdit() {
 	if server, ok := t.serverList.GetSelectedServer(); ok {
-		// Check if this server is externally managed (from config.d)
-		if server.SourceFile != "" && server.SourceFile != domain.SourceFileMain {
-			t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
-			return
-		}
 		form := NewServerForm(ServerFormEdit, &server).
 			SetApp(t.app).
 			SetVersionInfo(t.version, t.commit).
@@ -270,15 +263,19 @@ func (t *tui) handleServerSave(server domain.Server, original *domain.Server) {
 	var err error
 	if original != nil {
 		// Edit mode
-		err = t.serverService.UpdateServer(*original, server)
-		if err != nil && ssh_config_file.IsErrExternallyManaged(err) {
-			t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
-			t.handleFormCancel()
-			return
+		if server.SourceFile != original.SourceFile {
+			// Group changed — move server: add to new file first (safer),
+			// then delete from old file.
+			err = t.serverService.AddServer(server, server.SourceFile)
+			if err == nil {
+				err = t.serverService.DeleteServer(*original)
+			}
+		} else {
+			err = t.serverService.UpdateServer(*original, server)
 		}
 	} else {
-		// Add mode
-		err = t.serverService.AddServer(server)
+		// Add mode - pass the server's SourceFile to determine which config file to write to
+		err = t.serverService.AddServer(server, server.SourceFile)
 	}
 	if err != nil {
 		// Stay on form; show a small modal with the error
@@ -296,11 +293,6 @@ func (t *tui) handleServerSave(server domain.Server, original *domain.Server) {
 
 func (t *tui) handleServerDelete() {
 	if server, ok := t.serverList.GetSelectedServer(); ok {
-		// Check if this server is externally managed (from config.d)
-		if server.SourceFile != "" && server.SourceFile != domain.SourceFileMain {
-			t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
-			return
-		}
 		t.showDeleteConfirmModal(server)
 	}
 }
@@ -381,11 +373,7 @@ func (t *tui) showDeleteConfirmModal(server domain.Server) {
 		SetText(msg).
 		AddButtons([]string{"[yellow]C[-]ancel", "[yellow]D[-]elete"}).
 		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-		if buttonIndex == 1 {
-			if ssh_config_file.IsExternallyManaged(server) {
-				t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
-					return
-				}
+			if buttonIndex == 1 {
 				_ = t.serverService.DeleteServer(server)
 				t.refreshServerList()
 			}
@@ -401,11 +389,6 @@ func (t *tui) showDeleteConfirmModal(server domain.Server) {
 			return nil
 		case 'd', 'D':
 			// Delete
-			if ssh_config_file.IsExternallyManaged(server) {
-				t.showStatusTemp(fmt.Sprintf("Entry managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
-				t.handleModalClose()
-				return nil
-			}
 			_ = t.serverService.DeleteServer(server)
 			t.refreshServerList()
 			t.handleModalClose()
@@ -440,11 +423,7 @@ func (t *tui) showEditTagsForm(server domain.Server) {
 		newServer := server
 		newServer.Tags = tags
 		if err := t.serverService.UpdateServer(server, newServer); err != nil {
-			if ssh_config_file.IsErrExternallyManaged(err) {
-				t.showStatusTemp(fmt.Sprintf("Tags managed by %s — edit the file directly", formatGroupName(server.SourceFile)))
-			} else {
-				t.showStatusTemp(fmt.Sprintf("Failed to update tags: %v", err))
-			}
+			t.showStatusTemp(fmt.Sprintf("Failed to update tags: %v", err))
 			t.returnToMain()
 			return
 		}

@@ -30,6 +30,7 @@ type FileSystem interface {
 	Chmod(path string, perms os.FileMode) error
 	OpenFile(path string, i int, perms os.FileMode) (*os.File, error)
 	ReadDir(dir string) ([]os.DirEntry, error)
+	MkdirAll(path string, perms os.FileMode) error
 }
 
 // DefaultFileSystem implements FileSystem using standard os package.
@@ -72,4 +73,8 @@ func (fs DefaultFileSystem) OpenFile(path string, i int, perms os.FileMode) (*os
 
 func (fs DefaultFileSystem) ReadDir(dir string) ([]os.DirEntry, error) {
 	return os.ReadDir(dir)
+}
+
+func (fs DefaultFileSystem) MkdirAll(path string, perms os.FileMode) error {
+	return os.MkdirAll(path, perms)
 }

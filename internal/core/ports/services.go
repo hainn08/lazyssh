@@ -23,7 +23,7 @@ import (
 type ServerService interface {
 	ListServers(query string) ([]domain.Server, error)
 	UpdateServer(server domain.Server, newServer domain.Server) error
-	AddServer(server domain.Server) error
+	AddServer(server domain.Server, sourceFile string) error
 	DeleteServer(server domain.Server) error
 	SetPinned(alias string, pinned bool) error
 	SSH(alias string) error

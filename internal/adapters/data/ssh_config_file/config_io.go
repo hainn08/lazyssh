@@ -161,6 +161,65 @@ func (r *Repository) saveConfig(cfg *ssh_config.Config) error {
 	return nil
 }
 
+// loadConfigDFile loads and parses a specific config.d file.
+// Returns the parsed config and any error.
+func (r *Repository) loadConfigDFile(filename string) (*ssh_config.Config, error) {
+	filePath := filepath.Join(r.configDir, filename)
+	file, err := r.fileSystem.Open(filePath)
+	if err != nil {
+		if r.fileSystem.IsNotExist(err) {
+			// Return empty config if file doesn't exist
+			return &ssh_config.Config{Hosts: []*ssh_config.Host{}}, nil
+		}
+		return nil, fmt.Errorf("failed to open config.d file %s: %w", filename, err)
+	}
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			r.logger.Warnf("failed to close config.d file %s: %v", filename, cerr)
+		}
+	}()
+
+	cfg, err := ssh_config.Decode(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode config.d file %s: %w", filename, err)
+	}
+
+	return cfg, nil
+}
+
+// saveConfigDFile writes the SSH config to a specific config.d file with atomic operations.
+// Creates the file if it doesn't exist.
+func (r *Repository) saveConfigDFile(filename string, cfg *ssh_config.Config) error {
+	filePath := filepath.Join(r.configDir, filename)
+
+	// Ensure directory exists
+	if err := r.fileSystem.MkdirAll(r.configDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create config.d directory: %w", err)
+	}
+
+	tempFile, err := r.createTempFile(r.configDir)
+	if err != nil {
+		return fmt.Errorf("failed to create temporary file: %w", err)
+	}
+
+	defer func() {
+		if removeErr := r.fileSystem.Remove(tempFile); removeErr != nil {
+			r.logger.Warnf("failed to remove temporary file %s: %v", tempFile, removeErr)
+		}
+	}()
+
+	if err := r.writeConfigToFile(tempFile, cfg); err != nil {
+		return fmt.Errorf("failed to write config to temporary file: %w", err)
+	}
+
+	if err := r.fileSystem.Rename(tempFile, filePath); err != nil {
+		return fmt.Errorf("failed to atomically replace config.d file %s: %w", filename, err)
+	}
+
+	r.logger.Infof("SSH config.d file successfully updated: %s", filename)
+	return nil
+}
+
 // writeConfigToFile writes the SSH config content to the specified file
 func (r *Repository) writeConfigToFile(filePath string, cfg *ssh_config.Config) error {
 	file, err := r.fileSystem.OpenFile(filePath, os.O_WRONLY|os.O_TRUNC, SSHConfigPerms)

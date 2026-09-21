@@ -16,6 +16,8 @@ package ssh_config_file
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/Adembc/lazyssh/internal/core/domain"
 	"github.com/Adembc/lazyssh/internal/core/ports"
@@ -26,6 +28,7 @@ import (
 // Repository implements ServerRepository interface for SSH config file operations.
 type Repository struct {
 	configPath      string
+	configDir       string // ~/.ssh/config.d directory
 	fileSystem      FileSystem
 	metadataManager *metadataManager
 	logger          *zap.SugaredLogger
@@ -33,9 +36,11 @@ type Repository struct {
 
 // NewRepository creates a new SSH config repository.
 func NewRepository(logger *zap.SugaredLogger, configPath, metaDataPath string) ports.ServerRepository {
+	configDir := filepath.Join(filepath.Dir(configPath), "config.d")
 	return &Repository{
 		logger:          logger,
 		configPath:      configPath,
+		configDir:       configDir,
 		fileSystem:      DefaultFileSystem{},
 		metadataManager: newMetadataManager(metaDataPath, logger),
 	}
@@ -43,9 +48,11 @@ func NewRepository(logger *zap.SugaredLogger, configPath, metaDataPath string) p
 
 // NewRepositoryWithFS creates a new SSH config repository with a custom filesystem.
 func NewRepositoryWithFS(logger *zap.SugaredLogger, configPath string, metaDataPath string, fs FileSystem) ports.ServerRepository {
+	configDir := filepath.Join(filepath.Dir(configPath), "config.d")
 	return &Repository{
 		logger:          logger,
 		configPath:      configPath,
+		configDir:       configDir,
 		fileSystem:      fs,
 		metadataManager: newMetadataManager(metaDataPath, logger),
 	}
@@ -105,10 +112,41 @@ func (r *Repository) mergeServersWithDedup(existing, extra []domain.Server, sour
 }
 
 // AddServer adds a new server to the SSH config.
-func (r *Repository) AddServer(server domain.Server) error {
-	cfg, err := r.loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+// The sourceFile parameter specifies which config file to write to:
+// - "" or "default" → ~/.ssh/config.d/default.conf (created if doesn't exist)
+// - "dc_payx.conf" → ~/.ssh/config.d/dc_payx.conf (created if doesn't exist)
+// - "~/.ssh/config" → main config
+func (r *Repository) AddServer(server domain.Server, sourceFile string) error {
+	// Determine which config file to write to.
+	// Empty / "default" group always maps to config.d/default.conf (main config is
+	// only used when explicitly requested via SourceFileMain).
+	targetFile := sourceFile
+	writeToConfigD := true
+	if targetFile == "" || targetFile == "default" {
+		targetFile = "default.conf"
+	} else if targetFile == domain.SourceFileMain {
+		writeToConfigD = false
+	}
+
+	var cfg *ssh_config.Config
+	var err error
+
+	if writeToConfigD {
+		// Load or create the config.d file
+		cfg, err = r.loadConfigDFile(targetFile)
+		if err != nil {
+			// If file doesn't exist, create a new config
+			if os.IsNotExist(err) {
+				cfg = &ssh_config.Config{}
+			} else {
+				return fmt.Errorf("failed to load config.d file %s: %w", targetFile, err)
+			}
+		}
+	} else {
+		cfg, err = r.loadConfig()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
 	}
 
 	if r.serverExists(cfg, server.Alias) {
@@ -118,23 +156,44 @@ func (r *Repository) AddServer(server domain.Server) error {
 	host := r.createHostFromServer(server)
 	cfg.Hosts = append(cfg.Hosts, host)
 
-	if err := r.saveConfig(cfg); err != nil {
-		r.logger.Warnf("Failed to save config while adding new server: %v", err)
-		return fmt.Errorf("failed to save config: %w", err)
+	// Save to the appropriate file
+	if writeToConfigD {
+		if err := r.saveConfigDFile(targetFile, cfg); err != nil {
+			r.logger.Warnf("Failed to save config.d file %s while adding server: %v", targetFile, err)
+			return fmt.Errorf("failed to save config.d file: %w", err)
+		}
+	} else {
+		if err := r.saveConfig(cfg); err != nil {
+			r.logger.Warnf("Failed to save config while adding server: %v", err)
+			return fmt.Errorf("failed to save config: %w", err)
+		}
 	}
+
 	return r.metadataManager.updateServer(server, server.Alias)
 }
 
 // UpdateServer updates an existing server in the SSH config.
-// Returns ErrExternallyManaged if the server originates from a config.d file.
+// If the server is from a config.d file, updates that specific file instead of main config.
 func (r *Repository) UpdateServer(server domain.Server, newServer domain.Server) error {
-	if IsExternallyManaged(server) {
-		return fmt.Errorf("%w: %s", ErrExternallyManaged, server.SourceFile)
-	}
+	// Determine which config file to update based on server's SourceFile
+	sourceFile := server.SourceFile
+	isConfigD := sourceFile != "" && sourceFile != domain.SourceFileMain
 
-	cfg, err := r.loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+	var cfg *ssh_config.Config
+	var err error
+
+	if isConfigD {
+		// Load the specific config.d file
+		cfg, err = r.loadConfigDFile(sourceFile)
+		if err != nil {
+			return fmt.Errorf("failed to load config.d file %s: %w", sourceFile, err)
+		}
+	} else {
+		// Load main config
+		cfg, err = r.loadConfig()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
 	}
 
 	host := r.findHostByAlias(cfg, server.Alias)
@@ -162,24 +221,43 @@ func (r *Repository) UpdateServer(server domain.Server, newServer domain.Server)
 
 	r.updateHostNodes(host, newServer)
 
-	if err := r.saveConfig(cfg); err != nil {
-		r.logger.Warnf("Failed to save config while updating server: %v", err)
-		return fmt.Errorf("failed to save config: %w", err)
+	// Save to the appropriate file
+	if isConfigD {
+		if err := r.saveConfigDFile(sourceFile, cfg); err != nil {
+			r.logger.Warnf("Failed to save config.d file %s while updating server: %v", sourceFile, err)
+			return fmt.Errorf("failed to save config.d file: %w", err)
+		}
+	} else {
+		if err := r.saveConfig(cfg); err != nil {
+			r.logger.Warnf("Failed to save config while updating server: %v", err)
+			return fmt.Errorf("failed to save config: %w", err)
+		}
 	}
+
 	// Update metadata; pass old alias to allow inline migration
 	return r.metadataManager.updateServer(newServer, server.Alias)
 }
 
 // DeleteServer removes a server from the SSH config.
-// Returns ErrExternallyManaged if the server originates from a config.d file.
+// If the server is from a config.d file, removes it from that specific file.
 func (r *Repository) DeleteServer(server domain.Server) error {
-	if IsExternallyManaged(server) {
-		return fmt.Errorf("%w: %s", ErrExternallyManaged, server.SourceFile)
-	}
+	// Determine which config file to delete from
+	sourceFile := server.SourceFile
+	isConfigD := sourceFile != "" && sourceFile != domain.SourceFileMain
 
-	cfg, err := r.loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
+	var cfg *ssh_config.Config
+	var err error
+
+	if isConfigD {
+		cfg, err = r.loadConfigDFile(sourceFile)
+		if err != nil {
+			return fmt.Errorf("failed to load config.d file %s: %w", sourceFile, err)
+		}
+	} else {
+		cfg, err = r.loadConfig()
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
 	}
 
 	initialCount := len(cfg.Hosts)
@@ -189,10 +267,19 @@ func (r *Repository) DeleteServer(server domain.Server) error {
 		return fmt.Errorf("server with alias '%s' not found", server.Alias)
 	}
 
-	if err := r.saveConfig(cfg); err != nil {
-		r.logger.Warnf("Failed to save config while deleting server: %v", err)
-		return fmt.Errorf("failed to save config: %w", err)
+	// Save to the appropriate file
+	if isConfigD {
+		if err := r.saveConfigDFile(sourceFile, cfg); err != nil {
+			r.logger.Warnf("Failed to save config.d file %s while deleting server: %v", sourceFile, err)
+			return fmt.Errorf("failed to save config.d file: %w", err)
+		}
+	} else {
+		if err := r.saveConfig(cfg); err != nil {
+			r.logger.Warnf("Failed to save config while deleting server: %v", err)
+			return fmt.Errorf("failed to save config: %w", err)
+		}
 	}
+
 	return r.metadataManager.deleteServer(server.Alias)
 }
 

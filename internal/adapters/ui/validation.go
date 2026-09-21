@@ -154,8 +154,8 @@ func GetFieldValidators() map[string]fieldValidator {
 		Message: "User must start with a letter and contain only letters, numbers, dots, hyphens, and underscores",
 	}
 	validators["Keys"] = fieldValidator{
-		Validate: validateKeyPaths,
-		Message:  "Key file not found or not accessible",
+		Validate: validateKeyPathsLenient,
+		Message:  "Key path contains invalid characters",
 	}
 
 	// Connection fields
@@ -439,6 +439,20 @@ func validateFilePaths(files string, separator string) error {
 // validateKeyPaths validates SSH key file paths (comma-separated)
 func validateKeyPaths(keys string) error {
 	return validateFilePaths(keys, ",")
+}
+
+// validateKeyPathsLenient validates the FORMAT of SSH key paths without
+// requiring the files to exist on this machine. Keys may live on other
+// hosts or be provisioned later, so existence should not block editing.
+func validateKeyPathsLenient(keys string) error {
+	if keys == "" {
+		return nil
+	}
+	// Check for invalid characters first, before trimming
+	if strings.ContainsAny(keys, "\n\r	") {
+		return fmt.Errorf("file path contains invalid characters")
+	}
+	return nil
 }
 
 // validateKnownHostsFiles validates known_hosts file paths (space-separated)

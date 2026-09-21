@@ -703,12 +703,9 @@ func matchesSequence(text, pattern string) bool {
 func (sf *ServerForm) createSSHKeyAutocomplete() func(string) []string {
 	return func(currentText string) []string {
 		if currentText == "" {
-			// Show available keys when field is empty
-			availableKeys := GetAvailableSSHKeys()
-			if len(availableKeys) == 0 {
-				return nil
-			}
-			return availableKeys
+			// Don't auto-fill when empty — allows password-only auth (no key needed).
+			// Typing (e.g. "~" or "/") still triggers suggestions.
+			return nil
 		}
 
 		// Split by comma to handle multiple keys
@@ -947,11 +944,21 @@ func (sf *ServerForm) validateField(fieldName, value string) string {
 }
 
 // addDropDownWithHelp adds a dropdown field with help support
-func (sf *ServerForm) addDropDownWithHelp(form *tview.Form, label, fieldName string, options []string, initialOption int) {
+func (sf *ServerForm) addDropDownWithHelp(form *tview.Form, label, fieldName string, options []string, initialOption int, helpTexts ...string) {
+	helpText := ""
+	if len(helpTexts) > 0 {
+		helpText = helpTexts[0]
+	}
+
 	dropdown := tview.NewDropDown().
 		SetLabel(label).
 		SetOptions(options, nil).
 		SetCurrentOption(initialOption)
+
+	// Set help text if provided
+	if helpText != "" {
+		dropdown.SetBackgroundColor(tcell.ColorDefault)
+	}
 
 	// Add focus handler to show help
 	dropdown.SetFocusFunc(func() {
@@ -1072,6 +1079,7 @@ func (sf *ServerForm) getDefaultValues() ServerFormData {
 			Port:                 fmt.Sprint(sf.original.Port),
 			Key:                  strings.Join(sf.original.IdentityFiles, ", "),
 			Tags:                 strings.Join(sf.original.Tags, ", "),
+			Group:                sourceFileToGroupName(sf.original.SourceFile),
 			ProxyJump:            sf.original.ProxyJump,
 			ProxyCommand:         sf.original.ProxyCommand,
 			RemoteCommand:        sf.original.RemoteCommand,
@@ -1147,6 +1155,7 @@ func (sf *ServerForm) getDefaultValues() ServerFormData {
 		Port:  "22", // Keep port 22 as it's the standard SSH port
 		Key:   "",   // Empty for new servers (SSH will try default keys)
 		Tags:  "",
+		Group: "default", // Default group → saved to ~/.ssh/config.d/default.conf
 
 		// All other fields should be empty for new servers
 		// The SSH client will use its defaults when these are not specified
@@ -1253,6 +1262,34 @@ func (sf *ServerForm) createBasicForm() {
 
 	// Tags field
 	sf.addValidatedInputField(form, "Tags:", "Tags", defaultValues.Tags, 30, GetFieldPlaceholder("Tags"))
+
+	// Group field - InputField with autocomplete to allow creating new groups
+	groupFiles := GetAvailableConfigDFiles()
+	// Strip ".conf" suffix so users see clean group names (e.g. "dc_payx" not "dc_payx.conf")
+	groupOptions := make([]string, 0, len(groupFiles)+1)
+	groupOptions = append(groupOptions, "default")
+	for _, f := range groupFiles {
+		groupOptions = append(groupOptions, strings.TrimSuffix(f, ".conf"))
+	}
+	groupField := sf.addValidatedInputField(form, "Group:", "Group", defaultValues.Group, 30, "Config.d group (e.g., default, dc_payx)")
+	groupField.SetAutocompleteFunc(func(currentText string) []string {
+		// Don't auto-select "default" when field is empty — allows typing a
+		// custom group name without the dropdown intercepting Tab.
+		if currentText == "" {
+			return nil
+		}
+		var filtered []string
+		for _, opt := range groupOptions {
+			if strings.HasPrefix(strings.ToLower(opt), strings.ToLower(currentText)) {
+				filtered = append(filtered, opt)
+			}
+		}
+		// Also allow the current text as a new group name
+		if len(filtered) == 0 || filtered[0] != currentText {
+			filtered = append([]string{currentText}, filtered...)
+		}
+		return filtered
+	})
 
 	// Add save and cancel buttons
 	form.AddButton("Save", sf.handleSaveButton)
@@ -1645,6 +1682,7 @@ type ServerFormData struct {
 	Port  string
 	Key   string
 	Tags  string
+	Group string // config.d file name (e.g., "dc_payx.conf") or empty for main config
 
 	// Connection and proxy settings
 	ProxyJump            string
@@ -1780,6 +1818,7 @@ func (sf *ServerForm) getFormData() ServerFormData {
 		Port:  getFieldText("Port:"),
 		Key:   getFieldText("Keys:"),
 		Tags:  getFieldText("Tags:"),
+		Group: getFieldText("Group:"),
 		// Connection and proxy settings
 		ProxyJump:            getFieldText("ProxyJump:"),
 		ProxyCommand:         getFieldText("ProxyCommand:"),
@@ -1934,7 +1973,7 @@ func (sf *ServerForm) handleSave() bool {
 	sf.formPanel.SetTitle(" " + sf.titleForMode() + " ")
 	sf.formPanel.SetBorderColor(tcell.Color238)
 
-	server := sf.dataToServer(data)
+	server := sf.dataToServerForAdd(data)
 	if sf.onSave != nil {
 		sf.onSave(server, sf.original)
 	}
@@ -2020,7 +2059,7 @@ func (sf *ServerForm) hasUnsavedChanges() bool {
 	}
 
 	currentData := sf.getFormData()
-	currentServer := sf.dataToServer(currentData)
+	currentServer := sf.dataToServerForAdd(currentData)
 
 	// Use DeepEqual for simple comparison first
 	if reflect.DeepEqual(currentServer, *sf.original) {
@@ -2139,13 +2178,49 @@ func (sf *ServerForm) slicesEqual(a, b reflect.Value) bool {
 	return true
 }
 
-func (sf *ServerForm) dataToServer(data ServerFormData) domain.Server {
+// resolveSourceFile maps a Group field value to a SourceFile path.
+// "" / "default" -> "default.conf", "~/.ssh/config" kept as-is (main config),
+// otherwise ensures a ".conf" suffix for a config.d group name.
+func resolveSourceFile(groupName string) string {
+	switch {
+	case groupName == "" || groupName == "default":
+		return "default.conf"
+	case groupName == domain.SourceFileMain:
+		return domain.SourceFileMain
+	case !strings.HasSuffix(groupName, ".conf"):
+		return groupName + ".conf"
+	default:
+		return groupName
+	}
+}
+
+// sourceFileToGroupName converts a SourceFile back to a displayable group name
+// for the form's Group field. Strips ".conf" and maps default.conf/main to "default".
+func sourceFileToGroupName(sourceFile string) string {
+	switch {
+	case sourceFile == "" || sourceFile == "default.conf":
+		return "default"
+	case sourceFile == domain.SourceFileMain:
+		return domain.SourceFileMain
+	default:
+		return strings.TrimSuffix(sourceFile, ".conf")
+	}
+}
+
+// dataToServer converts form data to a domain.Server for ADD operations.
+// For Add operations, SourceFile comes from the Group dropdown.
+func (sf *ServerForm) dataToServerForAdd(data ServerFormData) domain.Server {
 	port := 22
 	if data.Port != "" {
 		if n, err := strconv.Atoi(data.Port); err == nil && n > 0 {
 			port = n
 		}
 	}
+
+	// Determine source file from Group field
+	// "" / "default" -> "default.conf", "~/.ssh/config" kept as-is (main),
+	// otherwise ensure ".conf" suffix for a config.d group name.
+	sourceFile := resolveSourceFile(data.Group)
 
 	// Use nil for empty slices to match original state
 	var tags []string
@@ -2188,6 +2263,7 @@ func (sf *ServerForm) dataToServer(data ServerFormData) domain.Server {
 		Port:                 port,
 		IdentityFiles:        keys,
 		Tags:                 tags,
+		SourceFile:           sourceFile,
 		ProxyJump:            data.ProxyJump,
 		ProxyCommand:         data.ProxyCommand,
 		RemoteCommand:        data.RemoteCommand,

@@ -123,12 +123,12 @@ func (s *serverService) UpdateServer(server domain.Server, newServer domain.Serv
 }
 
 // AddServer adds a new server to the repository.
-func (s *serverService) AddServer(server domain.Server) error {
+func (s *serverService) AddServer(server domain.Server, sourceFile string) error {
 	if err := validateServer(server); err != nil {
 		s.logger.Warnw("validation failed on add", "error", err, "server", server)
 		return err
 	}
-	err := s.serverRepository.AddServer(server)
+	err := s.serverRepository.AddServer(server, sourceFile)
 	if err != nil {
 		s.logger.Errorw("failed to add server", "error", err, "server", server)
 	}

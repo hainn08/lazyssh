@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -643,5 +644,30 @@ func GetAvailableKnownHostsFiles() []string {
 		}
 	}
 
+	return files
+}
+
+// GetAvailableConfigDFiles returns a list of available config.d/*.conf files.
+// It returns bare filenames like "dc_payx.conf", "runner.conf", etc.
+func GetAvailableConfigDFiles() []string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return []string{}
+	}
+
+	configDir := filepath.Join(homeDir, ".ssh", "config.d")
+	entries, err := os.ReadDir(configDir)
+	if err != nil {
+		// Directory doesn't exist or can't be read
+		return []string{}
+	}
+
+	var files []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".conf") {
+			files = append(files, entry.Name())
+		}
+	}
+	sort.Strings(files)
 	return files
 }

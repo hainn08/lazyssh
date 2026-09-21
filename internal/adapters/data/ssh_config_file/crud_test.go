@@ -16,6 +16,8 @@ package ssh_config_file
 
 import (
 	"testing"
+
+	"github.com/kevinburke/ssh_config"
 )
 
 func TestConvertCLIForwardToConfigFormat(t *testing.T) {
@@ -141,6 +143,39 @@ func TestConvertConfigForwardToCLIFormat(t *testing.T) {
 			result := r.convertConfigForwardToCLIFormat(tt.input)
 			if result != tt.expected {
 				t.Errorf("convertConfigForwardToCLIFormat(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestAddKVNodeIfNotEmptyRejectsEmptyAndQuotes(t *testing.T) {
+	r := &Repository{}
+	tests := []struct {
+		name      string
+		value     string
+		shouldAdd bool
+	}{
+		{name: "empty string rejected", value: "", shouldAdd: false},
+		{name: "single quote empty rejected", value: "''", shouldAdd: false},
+		{name: "double quote empty rejected", value: `""`, shouldAdd: false},
+		{name: "valid key path added", value: "~/.ssh/id_rsa", shouldAdd: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host := &ssh_config.Host{
+				Patterns: []*ssh_config.Pattern{{Str: "test-host"}},
+				Nodes:    make([]ssh_config.Node, 0),
+			}
+			r.addKVNodeIfNotEmpty(host, "IdentityFile", tt.value)
+			hasNode := false
+			for _, node := range host.Nodes {
+				if kv, ok := node.(*ssh_config.KV); ok && kv.Key == "IdentityFile" {
+					hasNode = true
+					break
+				}
+			}
+			if hasNode != tt.shouldAdd {
+				t.Errorf("addKVNodeIfNotEmpty(%q): node present=%v, want=%v", tt.value, hasNode, tt.shouldAdd)
 			}
 		})
 	}

@@ -88,10 +88,54 @@ func (sl *ServerList) build() {
 		}
 	})
 
+	// SetInputCapture handles keyboard navigation within the list.
+	// Left/Right arrows toggle group expansion (not return to search).
 	sl.List.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		//nolint:exhaustive // We only handle specific keys and pass through others
 		switch event.Key() {
-		case tcell.KeyLeft, tcell.KeyRight, tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyESC:
+		case tcell.KeyLeft:
+			// Go back to parent group or collapse current group
+			currentIdx := sl.List.GetCurrentItem()
+			if currentIdx >= 0 && currentIdx < len(sl.displayItems) {
+				item := sl.displayItems[currentIdx]
+				if !item.isGroup && item.server != nil && item.server.SourceFile != domain.SourceFileMain {
+					// Collapse the current server's group
+					sl.toggleGroup(item.server.SourceFile)
+					return nil
+				}
+			}
+			// If at top level, return to search
+			if sl.onReturnToSearch != nil {
+				sl.onReturnToSearch()
+			}
+			return nil
+		case tcell.KeyRight:
+			// Expand the current group or go deeper
+			currentIdx := sl.List.GetCurrentItem()
+			if currentIdx >= 0 && currentIdx < len(sl.displayItems) {
+				item := sl.displayItems[currentIdx]
+				if item.isGroup {
+					if !sl.groupExpanded[item.group] {
+						sl.toggleGroup(item.group)
+					}
+					return nil
+				}
+			}
+			// If on a server item and group is collapsed, expand it
+			if currentIdx >= 0 && currentIdx < len(sl.displayItems) {
+				item := sl.displayItems[currentIdx]
+				if !item.isGroup && item.server != nil {
+					sf := item.server.SourceFile
+					if sf == "" {
+						sf = domain.SourceFileMain
+					}
+					if !sl.groupExpanded[sf] {
+						sl.toggleGroup(sf)
+						return nil
+					}
+				}
+			}
+			return nil
+		case tcell.KeyBackspace, tcell.KeyBackspace2, tcell.KeyESC:
 			if sl.onReturnToSearch != nil {
 				sl.onReturnToSearch()
 			}
@@ -221,9 +265,10 @@ func (sl *ServerList) UpdateServers(servers []domain.Server) {
 	sort.Strings(groupNames)
 
 	// Only initialize expansion state for NEW groups; preserve existing state
+	// NEW GROUPS START COLLAPSED by default
 	for _, groupName := range groupNames {
 		if _, exists := sl.groupExpanded[groupName]; !exists {
-			sl.groupExpanded[groupName] = true
+			sl.groupExpanded[groupName] = false
 		}
 	}
 
